@@ -5,8 +5,8 @@ This Package uses a `pth` file to automatically add audit hooks to
 every python script run on a system. The hooks are created before any user-supplied code is run
 
 The Hooks will then log all events to either:
-Windows: The Application Event Log
-Linux/MacOS: Syslog
+* Windows: The Application Event Log
+* Linux/MacOS: Syslog
 
 
 # Installation - Linux/MacOS
