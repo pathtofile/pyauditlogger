@@ -1,25 +1,15 @@
 import sys
 import os
+import win32evtlogutil
+import win32evtlog
+import atexit
+from ctypes import *
 from .known_events import KNOWN_EVENTS
-# On Windows we'll use the Event Log Service
-# and on *nix we'll use syslog
-if sys.platform == "win32":
-    import win32evtlogutil
-    import win32evtlog
-else:
-    import logging
-    import logging.handlers
-    LOGGER = logging.getLogger(__name__)
 
+AMSI = None
+AMSI_CONTEXT = c_void_p(None)
+AMSI_SESSION = c_void_p(None)
 
-def audit_hook_nix(event, args):
-    """
-    Use Syslog to log all events on *nix
-    This should also work for MacOS/BSD, but haven't confirmed
-    """
-    cmd = f"{sys.executable} " + " ".join(sys.argv)
-    log = f"python-audit: [cmd={cmd!r} event={event!r} args={args!r}]"
-    LOGGER.info(log)
 
 def audit_hook_windows(event, args):
     """
@@ -32,11 +22,7 @@ def audit_hook_windows(event, args):
     cmd = f"{sys.executable} " + " ".join(sys.argv)
     # We'll just log an array of strings instead of compiling something
     # more structured. This is a dodgy way to do this, but its just a PoC
-    strings = [
-        f"PID: {os.getpid()}",
-        f"Commandline: {cmd}",
-        f"Event: {event}"
-    ]
+    strings = [f"PID: {os.getpid()}", f"Commandline: {cmd}", f"Event: {event}"]
     for arg in args:
         strings.append(f"{arg!r}")
     win32evtlogutil.ReportEvent(
@@ -46,12 +32,49 @@ def audit_hook_windows(event, args):
         eventType=win32evtlog.EVENTLOG_INFORMATION_TYPE,
         strings=strings)
 
-if sys.platform == "win32":
+    if event == "compile" or event == "cpython.run_command":
+        # Also pass to AMSI to scan
+        to_scan = repr(strings).encode()
+        to_scan_size = len(to_scan) * 2
+        amsi_result = c_void_p(None)
+        AMSI.AmsiScanBuffer(AMSI_CONTEXT, to_scan, to_scan_size, "Python",
+                            AMSI_SESSION, byref(amsi_result))
+        if amsi_result.value >= 32768:
+            # MALWARE!
+            print(f"MALWARE DETECTED: {args}")
+            sys.exit(1)
+
+
+def shutdown():
+    """
+    Finilize AMSI Session Context
+    """
+    AMSI.AmsiCloseSession(AMSI_CONTEXT, AMSI_SESSION)
+    AMSI.AmsiUninitialize(AMSI_CONTEXT)
+
+
+def setup():
+    """
+    Load AMSI DLL, Initialize AMSI and AMSI Session
+    """
+    global AMSI
+    global AMSI_CONTEXT
+    global AMSI_SESSION
+    try:
+        AMSI = cdll.LoadLibrary('amsi.dll')
+        if AMSI is not None:
+            ret = AMSI.AmsiInitialize("Python", byref(AMSI_CONTEXT))
+            if ret == 0:
+                ret = AMSI.AmsiOpenSession(AMSI_CONTEXT, byref(AMSI_SESSION))
+                if ret == 0:
+                    return True
+    except FileNotFoundError:
+        pass
+    except OSError:
+        pass
+    return False
+
+
+if setup():
+    atexit.register(shutdown)
     sys.addaudithook(audit_hook_windows)
-else:
-    LOGGER.setLevel(logging.INFO)
-    handler = logging.handlers.SysLogHandler(address='/dev/log')
-    formatter = logging.Formatter('%(message)s')
-    handler.setFormatter(formatter)
-    LOGGER.addHandler(handler)
-    sys.addaudithook(audit_hook_nix)
