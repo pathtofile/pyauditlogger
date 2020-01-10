@@ -34,7 +34,7 @@ def audit_hook_windows(event, args):
 
     if event == "compile" or event == "cpython.run_command":
         # Also pass to AMSI to scan
-        to_scan = repr(strings).encode()
+        to_scan = repr(args).encode()
         to_scan_size = len(to_scan) * 2
         amsi_result = c_void_p(None)
         AMSI.AmsiScanBuffer(AMSI_CONTEXT, to_scan, to_scan_size, "Python",
